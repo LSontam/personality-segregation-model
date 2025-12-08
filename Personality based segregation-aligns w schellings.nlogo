@@ -9,6 +9,7 @@ globals [
   chol-matrix
   psychDist-summary
 ;  use-local-search ;; true for Schelling's logic, false for global teleportation
+;  use-dualLevel-calc-A&N
 ]
 
 turtles-own [
@@ -266,32 +267,43 @@ to-report calculate-psychDist-between [agent1 agent2]
     set dist dist + abs(a1-e - a2-e)
   ]
 
-  ;; 4. Agreeableness Low/Low
-  if (a1-a < 50 and a2-a < 50) [
-    set dist dist + (100 - abs(a1-a - a2-a))
-  ]
-  ;; 6. Agreeableness Low/Low - Consider both extremity and dissimilarity
-;  if (a1-a < 50 and a2-a < 50) [
-;    let avg-deviation (abs(50 - a1-a) + abs(50 - a2-a)) / 2
-;    let dissimilarity abs(a1-a - a2-a)
-;    set dist dist + avg-deviation + (dissimilarity * 0.5)
-;  ]
 
+  ;; 4. Agreeableness Low/Low
+  ifelse use-dualLevel-calc-A&N
+   [;; Dual-Level Calculation - Consider both extremity and dissimilarity
+
+    if (a1-a < 50 and a2-a < 50) [
+      let avg-deviation (abs(50 - a1-a) + abs(50 - a2-a)) / 2
+      let dissimilarity abs(a1-a - a2-a)
+      set dist dist + (1.5 * avg-deviation) + (dissimilarity * 0.5)
+      ]
+    ]
+    [;; Old Calculation - Agreeableness Low/Low
+      if (a1-a < 50 and a2-a < 50) [
+        set dist dist + (100 - abs(a1-a - a2-a))
+      ]
+    ]
   ;; 5. Neuroticism High/Low
   if ((a1-n > 50 and a2-n < 50) or (a1-n < 50 and a2-n > 50)) [
     set dist dist + abs(a1-n - a2-n)
   ]
 
+
   ;; 6. Neuroticism High/High
-  if (a1-n > 50 and a2-n > 50) [
-    set dist dist + (100 - abs(a1-n - a2-n))
+  ifelse use-dualLevel-calc-A&N
+    [;; Dual-level Calculation - Consider both extremity and dissimilarity
+      if (a1-n > 50 and a2-n > 50) [
+        let avg-deviation (abs(50 - a1-n) + abs(50 - a2-n)) / 2
+        let dissimilarity abs(a1-n - a2-n)
+        set dist dist + (1.5 * avg-deviation) + (dissimilarity * 0.5)
+      ]
+    ]
+  [;; Old Calculation - Neuroticism High/High
+    if (a1-n > 50 and a2-n > 50) [
+      set dist dist + (100 - abs(a1-n - a2-n))
+    ]
   ]
-  ;; 6. Neuroticism Low/Low - Consider both extremity and dissimilarity
-;  if (a1-n > 50 and a2-n > 50) [
-;    let avg-deviation (abs(50 - a1-n) + abs(50 - a2-n)) / 2
-;    let dissimilarity abs(a1-n - a2-n)
-;    set dist dist + avg-deviation + (dissimilarity * 0.5)
-;  ]
+
   report dist
 end
 
@@ -311,9 +323,9 @@ to  evaluate-psychDist-metrics
   let distances calculate-all-psychDist-values
 
   if length distances > 0 [
-    let mean-psychdist mean distances
-    let min-psychdist min distances
-    let max-psychdist max distances
+    let mean-psychDist mean distances
+    let min-psychDist min distances
+    let max-psychDist max distances
     set psychDist-summary (word "Mean: " precision mean-psychDist 2
                                  " | Min: " precision min-psychDist 2
                                  " | Max: " precision max-psychDist 2)
@@ -473,12 +485,421 @@ to trait-and-color-summary
 
   print "=========================================="
 end
+
+
+
+to identify-spatial-clusters
+  ;; Reset all cluster IDs
+  ask turtles [
+    set cluster-id -1
+  ]
+
+  let current-id 0
+
+  ;; For each unassigned turtle, start a new cluster
+  ask turtles [
+    if cluster-id = -1 [
+      flood-fill-cluster current-id self
+      set current-id current-id + 1
+    ]
+  ]
+end
+
+to flood-fill-cluster [id starting-turtle]
+  ;; Mark the starting turtle
+  ask starting-turtle [
+    if cluster-id = -1 [
+      set cluster-id id
+
+      ;; Get all neighbors and recursively assign them
+      ask turtles-on neighbors [
+        if cluster-id = -1 [
+          flood-fill-cluster id self
+        ]
+      ]
+    ]
+  ]
+end
+
+to color-clusters
+  ask turtles [
+    let cluster-colors [red orange yellow green blue magenta cyan white brown pink]
+    set color item (cluster-id mod length cluster-colors) cluster-colors
+  ]
+end
+
+to analyze-clusters
+  ;; Only analyze clusters with 4+ agents
+  let cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+  let valid-clusters []
+
+  ;; Filter for clusters with 4+ agents
+  foreach sort cluster-ids [id ->
+    let cluster-size count turtles with [cluster-id = id]
+    if cluster-size >= 4 [
+      set valid-clusters lput id valid-clusters
+    ]
+  ]
+
+  if length valid-clusters = 0 [
+    print "No clusters with 4+ agents found."
+    stop
+  ]
+
+  print "=========================================="
+  print "CLUSTER ANALYSIS (4+ agents minimum)"
+  print "=========================================="
+  print ""
+
+  ;; Analyze each valid cluster
+  foreach valid-clusters [id ->
+    analyze-single-cluster id
+  ]
+
+  ;; Compare within vs between cluster psychDist
+  compare-cluster-psychDist valid-clusters
+end
+
+to analyze-single-cluster [id]
+  let cluster-members turtles with [cluster-id = id]
+  let cluster-size count cluster-members
+
+  print (word "CLUSTER " id " (" cluster-size " agents)")
+  print ""
+
+  ;; 1. Mean trait scores per cluster
+  print "Mean Trait Scores:"
+  let mean-o mean [openness] of cluster-members
+  let mean-c mean [conscientiousness] of cluster-members
+  let mean-e mean [extraversion] of cluster-members
+  let mean-a mean [agreeableness] of cluster-members
+  let mean-n mean [neuroticism] of cluster-members
+
+  print (word "  Openness:           " precision mean-o 2)
+  print (word "  Conscientiousness:  " precision mean-c 2)
+  print (word "  Extraversion:       " precision mean-e 2)
+  print (word "  Agreeableness:      " precision mean-a 2)
+  print (word "  Neuroticism:        " precision mean-n 2)
+  print ""
+
+  ;; 2. Frequency distribution - % agents with each trait dominant
+  print "Trait Dominance Frequency (% of agents):"
+  let trait-dominant-counts [0 0 0 0 0]  ;; [O C E A N]
+
+  ask cluster-members [
+    let traits (list openness conscientiousness extraversion agreeableness neuroticism)
+    let max-score max traits
+    let dominant-traits filter [i -> (item i traits) = max-score] (range 5)
+
+    ;; For each dominant trait this agent has, increment count
+    foreach dominant-traits [trait-idx ->
+      let counts-list trait-dominant-counts
+      set counts-list replace-item trait-idx counts-list ((item trait-idx counts-list) + 1)
+      set trait-dominant-counts counts-list
+    ]
+  ]
+
+  let trait-names ["Openness" "Conscientiousness" "Extraversion" "Agreeableness" "Neuroticism"]
+  let idx 0
+  foreach trait-dominant-counts [count ->
+    let pct (count / cluster-size) * 100
+    print (word "  " (item idx trait-names) ": " precision pct 1 "%")
+    set idx idx + 1
+  ]
+  print ""
+
+  ;; 3. Dominant trait per cluster (with tie-breaking)
+  print "Cluster Dominant Trait (majority rule with tie-breaking):"
+  let max-count max trait-dominant-counts
+  let dominant-trait-indices filter [i -> (item i trait-dominant-counts) = max-count] (range 5)
+
+  ifelse length dominant-trait-indices = 1 [
+    print (word "  " (item (item 0 dominant-trait-indices) trait-names))
+  ] [
+    ;; Tie exists - report all tied traits
+    let tied-traits map [i -> (item i trait-names)] dominant-trait-indices
+    print (word "  TIE: " (reduce [acc x -> (word acc ", " x)] tied-traits))
+  ]
+  print ""
+
+  ;; 4. Within-cluster psychDist
+  let within-cluster-distances []
+  ask cluster-members [
+    let my-neighbors turtles-on neighbors with [cluster-id = [cluster-id] of myself]
+    ask my-neighbors [
+      let dist calculate-psychDist-between myself self
+      set within-cluster-distances lput dist within-cluster-distances
+    ]
+  ]
+
+  ifelse length within-cluster-distances > 0 [
+    let mean-within-dist mean within-cluster-distances
+    print (word "Within-Cluster Mean psychDist: " precision mean-within-dist 2)
+  ] [
+    print "Within-Cluster Mean psychDist: N/A (no in-cluster neighbors)"
+  ]
+  print ""
+  print "=========================================="
+  print ""
+end
+
+to compare-cluster-psychDist [valid-clusters]
+  print "BETWEEN-CLUSTER vs WITHIN-CLUSTER psychDist COMPARISON"
+  print "=========================================="
+
+  ;; Calculate all within-cluster distances
+  let all-within-distances []
+  ask turtles with [cluster-id != -1] [
+    let my-cluster cluster-id
+    let my-neighbors turtles-on neighbors with [cluster-id = my-cluster]
+    ask my-neighbors [
+      let dist calculate-psychDist-between myself self
+      set all-within-distances lput dist all-within-distances
+    ]
+  ]
+
+  ;; Calculate all between-cluster distances
+  let all-between-distances []
+  ask turtles with [cluster-id != -1] [
+    let my-cluster cluster-id
+    let between-neighbors turtles-on neighbors with [cluster-id != my-cluster and cluster-id != -1]
+    ask between-neighbors [
+      let dist calculate-psychDist-between myself self
+      set all-between-distances lput dist all-between-distances
+    ]
+  ]
+
+  print ""
+  if length all-within-distances > 0 [
+    let mean-within mean all-within-distances
+    let min-within min all-within-distances
+    let max-within max all-within-distances
+    print (word "Within-Cluster psychDist:")
+    print (word "  Mean: " precision mean-within 2)
+    print (word "  Min:  " precision min-within 2)
+    print (word "  Max:  " precision max-within 2)
+  ] [
+    print "Within-Cluster psychDist: No in-cluster neighbors found"
+  ]
+
+  print ""
+  if length all-between-distances > 0 [
+    let mean-between mean all-between-distances
+    let min-between min all-between-distances
+    let max-between max all-between-distances
+    print (word "Between-Cluster psychDist:")
+    print (word "  Mean: " precision mean-between 2)
+    print (word "  Min:  " precision min-between 2)
+    print (word "  Max:  " precision max-between 2)
+  ] [
+    print "Between-Cluster psychDist: No between-cluster neighbors found"
+  ]
+
+  print "=========================================="
+end
+
+
+
+
+
+
+
+
+
+;to analyze-clusters
+;  print "===== CLUSTER ANALYSIS ====="
+;  print ""
+;
+;  let cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+;
+;  foreach sort cluster-ids [
+;    id ->
+;    analyze-single-cluster id
+;  ]
+;
+;  print ""
+;  print "===== BETWEEN-CLUSTER & WITHIN-CLUSTER HOMOGENEITY ====="
+;  calculate-between-cluster-homogeneity cluster-ids
+;end
+
+;to analyze-single-cluster [id]
+;  let cluster-members turtles with [cluster-id = id]
+;  let cluster-size count cluster-members
+;
+;  print (word "CLUSTER " id " (" cluster-size " agents)")
+;  print "---"
+;
+;  ;; 2. Cluster density
+;  let cluster-bounds get-cluster-bounds cluster-members
+;  let area (item 0 cluster-bounds) * (item 1 cluster-bounds)
+;  let density ifelse-value (area > 0) [cluster-size / area] [0]
+;  print (word "  Density: " precision density 3 " agents/patch")
+;
+;  ;; 4 & 5. Average traits and diversity (std dev)
+;  let o-vals [openness] of cluster-members
+;  let c-vals [conscientiousness] of cluster-members
+;  let e-vals [extraversion] of cluster-members
+;  let a-vals [agreeableness] of cluster-members
+;  let n-vals [neuroticism] of cluster-members
+;
+;  print "  Avg Traits (Mean ± Std Dev):"
+;  print (word "    Openness: " precision (mean o-vals) 2 " ± " precision (std-dev o-vals) 2)
+;  print (word "    Conscientiousness: " precision (mean c-vals) 2 " ± " precision (std-dev c-vals) 2)
+;  print (word "    Extraversion: " precision (mean e-vals) 2 " ± " precision (std-dev e-vals) 2)
+;  print (word "    Agreeableness: " precision (mean a-vals) 2 " ± " precision (std-dev a-vals) 2)
+;  print (word "    Neuroticism: " precision (mean n-vals) 2 " ± " precision (std-dev n-vals) 2)
+;
+;  ;; 6. Dominant personality type
+;  let trait-means (list (mean o-vals) (mean c-vals) (mean e-vals) (mean a-vals) (mean n-vals))
+;  let trait-names ["Openness" "Conscientiousness" "Extraversion" "Agreeableness" "Neuroticism"]
+;  let dominant-index 0
+;  let max-trait item 0 trait-means
+;  let i 0
+;  repeat length trait-means [
+;    if item i trait-means > max-trait [
+;      set max-trait item i trait-means
+;      set dominant-index i
+;    ]
+;    set i i + 1
+;  ]
+;  print (word "  Dominant Trait: " item dominant-index trait-names " (" precision max-trait 2 ")")
+;
+;  ;; 7. Color composition
+;  print "  Color Composition:"
+;  let red-count count cluster-members with [color = red]
+;  let orange-count count cluster-members with [color = orange]
+;  let yellow-count count cluster-members with [color = yellow]
+;  let green-count count cluster-members with [color = green]
+;  let blue-count count cluster-members with [color = blue]
+;
+;  if cluster-size > 0 [
+;    print (word "    Red (O): " red-count " (" precision (red-count / cluster-size * 100) 1 "%)")
+;    print (word "    Orange (C): " orange-count " (" precision (orange-count / cluster-size * 100) 1 "%)")
+;    print (word "    Yellow (E): " yellow-count " (" precision (yellow-count / cluster-size * 100) 1 "%)")
+;    print (word "    Green (A): " green-count " (" precision (green-count / cluster-size * 100) 1 "%)")
+;    print (word "    Blue (N): " blue-count " (" precision (blue-count / cluster-size * 100) 1 "%)")
+;  ]
+;
+;  ;; 8. Within-cluster compatibility (average psychDist)
+;  let within-cluster-distances get-within-cluster-distances cluster-members
+;  if length within-cluster-distances > 0 [
+;    let avg-within mean within-cluster-distances
+;    print (word "  Within-Cluster Avg PsychDist: " precision avg-within 2)
+;  ]
+;
+;  print ""
+;end
+;
+;to-report get-cluster-bounds [cluster-members]
+;  let x-coords [xcor] of cluster-members
+;  let y-coords [ycor] of cluster-members
+;  let x-range (max x-coords - min x-coords)
+;  let y-range (max y-coords - min y-coords)
+;
+;  ;; Avoid division by zero
+;  if x-range = 0 [ set x-range 1 ]
+;  if y-range = 0 [ set y-range 1 ]
+;
+;  report (list x-range y-range)
+;end
+;
+;to-report get-within-cluster-distances [cluster-members]
+;  let distances []
+;  let members-list sort cluster-members
+;  let n length members-list
+;
+;  if n < 2 [ report distances ]
+;
+;  let i 0
+;  repeat n [
+;    let j i + 1
+;    repeat (n - j) [
+;      let agent1 item i members-list
+;      let agent2 item j members-list
+;      let dist calculate-psychDist-between agent1 agent2
+;      set distances lput dist distances
+;      set j j + 1
+;    ]
+;    set i i + 1
+;  ]
+;
+;  report distances
+;end
+;
+;to calculate-between-cluster-homogeneity [cluster-ids]
+;  let cluster-trait-avgs []
+;
+;  ;; Collect average traits for each cluster
+;  foreach cluster-ids [
+;    id ->
+;    let cluster-members turtles with [cluster-id = id]
+;    let o-avg mean [openness] of cluster-members
+;    let c-avg mean [conscientiousness] of cluster-members
+;    let e-avg mean [extraversion] of cluster-members
+;    let a-avg mean [agreeableness] of cluster-members
+;    let n-avg mean [neuroticism] of cluster-members
+;
+;    set cluster-trait-avgs lput (list o-avg c-avg e-avg a-avg n-avg) cluster-trait-avgs
+;  ]
+;
+;  ;; Compare clusters pairwise
+;  if length cluster-ids > 1 [
+;    print "Between-Cluster Differences (avg trait distance):"
+;    let k 0
+;    repeat length cluster-ids [
+;      let m k + 1
+;      repeat (length cluster-ids - m) [
+;        let traits1 item k cluster-trait-avgs
+;        let traits2 item m cluster-trait-avgs
+;
+;        let diff 0
+;        let n 0
+;        repeat 5 [
+;          set diff diff + abs(item n traits1 - item n traits2)
+;          set n n + 1
+;        ]
+;        set diff diff / 5
+;
+;        print (word "  Cluster " k " vs Cluster " m ": " precision diff 2)
+;        set m m + 1
+;      ]
+;      set k k + 1
+;    ]
+;  ]
+;
+;  ;; Within-cluster homogeneity summary
+;  print ""
+;  print "Within-Cluster Homogeneity (lower = more homogeneous):"
+;  foreach cluster-ids [
+;    id ->
+;    let cluster-members turtles with [cluster-id = id]
+;    let o-std std-dev [openness] of cluster-members
+;    let c-std std-dev [conscientiousness] of cluster-members
+;    let e-std std-dev [extraversion] of cluster-members
+;    let a-std std-dev [agreeableness] of cluster-members
+;    let n-std std-dev [neuroticism] of cluster-members
+;
+;    let avg-std (o-std + c-std + e-std + a-std + n-std) / 5
+;    print (word "  Cluster " id ": " precision avg-std 2 " (avg std dev across traits)")
+;  ]
+;end
+;
+;to-report std-dev [values]
+;  if length values < 2 [ report 0 ]
+;  let avg mean values
+;  let sum-sq 0
+;  foreach values [
+;    v ->
+;    set sum-sq sum-sq + ((v - avg) ^ 2)
+;  ]
+;  report sqrt (sum-sq / (length values - 1))
+;end
 @#$#@#$#@
 GRAPHICS-WINDOW
-273
-10
-638
-376
+335
+15
+700
+381
 -1
 -1
 7.0
@@ -502,9 +923,9 @@ ticks
 30.0
 
 MONITOR
-505
+565
 410
-618
+690
 455
 Percent Unhappy
 percent-unhappy
@@ -513,10 +934,10 @@ percent-unhappy
 11
 
 MONITOR
-346
-405
-476
-450
+408
+410
+538
+455
 Percent Incompatible
 percent-incompatible
 1
@@ -524,10 +945,10 @@ percent-incompatible
 11
 
 PLOT
-10
-140
-259
-283
+72
+145
+321
+288
 Percent Incompatible
 time
 %
@@ -542,10 +963,10 @@ PENS
 "percent" 1.0 0 -2674135 true "" "plot percent-incompatible"
 
 PLOT
-10
-284
-259
-448
+72
+289
+321
+453
 Percent Unhappy
 time
 %
@@ -560,40 +981,40 @@ PENS
 "percent" 1.0 0 -10899396 true "" "plot percent-unhappy"
 
 SLIDER
-15
-55
-240
-88
+77
+60
+302
+93
 number
 number
 500
 2500
-800.0
+500.0
 10
 1
 NIL
 HORIZONTAL
 
 SLIDER
-15
-95
-267
-128
+77
+100
+329
+133
 %-compatible-neighbors-wanted
 %-compatible-neighbors-wanted
 0.0
 100.0
-45.0
+55.0
 5
 1
 %
 HORIZONTAL
 
 BUTTON
-34
-14
-114
-47
+96
+19
+176
+52
 setup
 setup
 NIL
@@ -607,10 +1028,10 @@ NIL
 1
 
 BUTTON
-124
-14
-204
-47
+186
+19
+266
+52
 go
 go
 T
@@ -624,10 +1045,10 @@ NIL
 0
 
 SLIDER
-10
-505
-252
-538
+72
+510
+314
+543
 pairwise-incompatibility-threshold
 pairwise-incompatibility-threshold
 0
@@ -639,15 +1060,71 @@ NIL
 HORIZONTAL
 
 SWITCH
-70
-595
-217
-628
+85
+565
+270
+598
 use-local-search
 use-local-search
 0
 1
 -1000
+
+SWITCH
+85
+615
+272
+648
+use-dualLevel-calc-A&N
+use-dualLevel-calc-A&N
+1
+1
+-1000
+
+MONITOR
+450
+470
+645
+515
+NIL
+psychDist-summary
+1
+1
+11
+
+BUTTON
+455
+530
+632
+563
+NIL
+check-correlations-simple
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+460
+580
+627
+613
+NIL
+trait-and-color-summary
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
 
 @#$#@#$#@
 ## ACKNOWLEDGMENT
