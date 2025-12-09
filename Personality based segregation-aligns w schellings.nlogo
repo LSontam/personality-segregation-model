@@ -9,7 +9,7 @@ globals [
   chol-matrix
   psychDist-summary
 ;  use-local-search ;; true for Schelling's logic, false for global teleportation
-;  use-dualLevel-calc-A&N
+;  use-dualLevel-calc-A_N
 ]
 
 turtles-own [
@@ -207,13 +207,23 @@ to update-turtles
 
     set total-nearby count my-neighbors
 
+;    if total-nearby = 0 [
+;      set happy? true
+;      set incompatible-nearby 0
+;      set compatible-nearby 0
+;      stop
+;    ]
     if total-nearby = 0 [
-      set happy? true
+      ;; Extraverts are unhappy with no neighbors, others are happy
+      ifelse extraversion > 50 [
+        set happy? false
+      ] [
+        set happy? true
+      ]
       set incompatible-nearby 0
       set compatible-nearby 0
       stop
     ]
-
     ;; Use LOCAL variable to count incompatible neighbors
     let incomp-count 0
     ask my-neighbors [
@@ -269,7 +279,7 @@ to-report calculate-psychDist-between [agent1 agent2]
 
 
   ;; 4. Agreeableness Low/Low
-  ifelse use-dualLevel-calc-A&N
+  ifelse use-dualLevel-calc-A_N
    [;; Dual-Level Calculation - Consider both extremity and dissimilarity
 
     if (a1-a < 50 and a2-a < 50) [
@@ -290,7 +300,7 @@ to-report calculate-psychDist-between [agent1 agent2]
 
 
   ;; 6. Neuroticism High/High
-  ifelse use-dualLevel-calc-A&N
+  ifelse use-dualLevel-calc-A_N
     [;; Dual-level Calculation - Consider both extremity and dissimilarity
       if (a1-n > 50 and a2-n > 50) [
         let avg-deviation (abs(50 - a1-n) + abs(50 - a2-n)) / 2
@@ -528,6 +538,20 @@ to color-clusters
   ]
 end
 
+to highlight-cluster [target-cluster-id]
+  ;; Make all turtles gray first
+  ask turtles [
+    set color gray
+  ]
+
+  ;; Highlight the target cluster in bright red
+  ask turtles with [cluster-id = target-cluster-id] [
+    set color red
+  ]
+
+  print (word "Cluster " target-cluster-id " highlighted in red. (" (count turtles with [cluster-id = target-cluster-id]) " agents)")
+end
+
 to analyze-clusters
   ;; Only analyze clusters with 4+ agents
   let cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
@@ -589,20 +613,23 @@ to analyze-single-cluster [id]
   ask cluster-members [
     let traits (list openness conscientiousness extraversion agreeableness neuroticism)
     let max-score max traits
-    let dominant-traits filter [i -> (item i traits) = max-score] (range 5)
+    let dominant-trait-indices filter [i -> (item i traits) = max-score] (range 5)
 
     ;; For each dominant trait this agent has, increment count
-    foreach dominant-traits [trait-idx ->
-      let counts-list trait-dominant-counts
-      set counts-list replace-item trait-idx counts-list ((item trait-idx counts-list) + 1)
-      set trait-dominant-counts counts-list
+    let idx 0
+    repeat length trait-dominant-counts [
+      if member? idx dominant-trait-indices [
+        let old-count item idx trait-dominant-counts
+        set trait-dominant-counts replace-item idx trait-dominant-counts (old-count + 1)
+      ]
+      set idx idx + 1
     ]
   ]
 
   let trait-names ["Openness" "Conscientiousness" "Extraversion" "Agreeableness" "Neuroticism"]
   let idx 0
-  foreach trait-dominant-counts [count ->
-    let pct (count / cluster-size) * 100
+  foreach trait-dominant-counts [trait-count ->
+    let pct (trait-count / cluster-size) * 100
     print (word "  " (item idx trait-names) ": " precision pct 1 "%")
     set idx idx + 1
   ]
@@ -617,15 +644,15 @@ to analyze-single-cluster [id]
     print (word "  " (item (item 0 dominant-trait-indices) trait-names))
   ] [
     ;; Tie exists - report all tied traits
-    let tied-traits map [i -> (item i trait-names)] dominant-trait-indices
-    print (word "  TIE: " (reduce [acc x -> (word acc ", " x)] tied-traits))
+    print (word "  TIE: Multiple traits dominant")
   ]
   print ""
 
   ;; 4. Within-cluster psychDist
   let within-cluster-distances []
   ask cluster-members [
-    let my-neighbors turtles-on neighbors with [cluster-id = [cluster-id] of myself]
+    let my-cluster-id cluster-id
+    let my-neighbors (turtles-on neighbors) with [cluster-id = my-cluster-id]
     ask my-neighbors [
       let dist calculate-psychDist-between myself self
       set within-cluster-distances lput dist within-cluster-distances
@@ -636,7 +663,7 @@ to analyze-single-cluster [id]
     let mean-within-dist mean within-cluster-distances
     print (word "Within-Cluster Mean psychDist: " precision mean-within-dist 2)
   ] [
-    print "Within-Cluster Mean psychDist: N/A (no in-cluster neighbors)"
+    print (word "Within-Cluster Mean psychDist: N/A (no in-cluster neighbors)")
   ]
   print ""
   print "=========================================="
@@ -651,7 +678,7 @@ to compare-cluster-psychDist [valid-clusters]
   let all-within-distances []
   ask turtles with [cluster-id != -1] [
     let my-cluster cluster-id
-    let my-neighbors turtles-on neighbors with [cluster-id = my-cluster]
+    let my-neighbors (turtles-on neighbors) with [cluster-id = my-cluster]
     ask my-neighbors [
       let dist calculate-psychDist-between myself self
       set all-within-distances lput dist all-within-distances
@@ -662,7 +689,7 @@ to compare-cluster-psychDist [valid-clusters]
   let all-between-distances []
   ask turtles with [cluster-id != -1] [
     let my-cluster cluster-id
-    let between-neighbors turtles-on neighbors with [cluster-id != my-cluster and cluster-id != -1]
+    let between-neighbors (turtles-on neighbors) with [cluster-id != my-cluster and cluster-id != -1]
     ask between-neighbors [
       let dist calculate-psychDist-between myself self
       set all-between-distances lput dist all-between-distances
@@ -670,7 +697,7 @@ to compare-cluster-psychDist [valid-clusters]
   ]
 
   print ""
-  if length all-within-distances > 0 [
+  ifelse length all-within-distances > 0 [
     let mean-within mean all-within-distances
     let min-within min all-within-distances
     let max-within max all-within-distances
@@ -679,11 +706,11 @@ to compare-cluster-psychDist [valid-clusters]
     print (word "  Min:  " precision min-within 2)
     print (word "  Max:  " precision max-within 2)
   ] [
-    print "Within-Cluster psychDist: No in-cluster neighbors found"
+    print (word "Within-Cluster psychDist: No in-cluster neighbors found")
   ]
 
   print ""
-  if length all-between-distances > 0 [
+  ifelse length all-between-distances > 0 [
     let mean-between mean all-between-distances
     let min-between min all-between-distances
     let max-between max all-between-distances
@@ -692,7 +719,7 @@ to compare-cluster-psychDist [valid-clusters]
     print (word "  Min:  " precision min-between 2)
     print (word "  Max:  " precision max-between 2)
   ] [
-    print "Between-Cluster psychDist: No between-cluster neighbors found"
+    print (word "Between-Cluster psychDist: No between-cluster neighbors found")
   ]
 
   print "=========================================="
@@ -1004,7 +1031,7 @@ SLIDER
 %-compatible-neighbors-wanted
 0.0
 100.0
-55.0
+75.0
 5
 1
 %
@@ -1053,7 +1080,7 @@ pairwise-incompatibility-threshold
 pairwise-incompatibility-threshold
 0
 500
-55.0
+120.0
 5
 1
 NIL
@@ -1066,7 +1093,7 @@ SWITCH
 598
 use-local-search
 use-local-search
-0
+1
 1
 -1000
 
@@ -1075,17 +1102,17 @@ SWITCH
 615
 272
 648
-use-dualLevel-calc-A&N
-use-dualLevel-calc-A&N
+use-dualLevel-calc-A_N
+use-dualLevel-calc-A_N
 1
 1
 -1000
 
 MONITOR
-450
-470
-645
-515
+405
+465
+600
+510
 NIL
 psychDist-summary
 1
@@ -1093,10 +1120,10 @@ psychDist-summary
 11
 
 BUTTON
-455
-530
-632
-563
+405
+525
+582
+558
 NIL
 check-correlations-simple
 NIL
@@ -1110,12 +1137,74 @@ NIL
 1
 
 BUTTON
-460
-580
-627
-613
+402
+575
+587
+608
 NIL
 trait-and-color-summary
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+INPUTBOX
+630
+470
+782
+530
+cluster-ID-Input
+2.0
+1
+0
+Number
+
+BUTTON
+630
+545
+807
+578
+Highlight Selected Cluster
+highlight-cluster cluster-id-input
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+400
+625
+585
+658
+Cluster-Analysis
+identify-spatial-clusters\ncolor-clusters\nanalyze-clusters
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+635
+590
+742
+623
+NIL
+color-clusters
 NIL
 1
 T
