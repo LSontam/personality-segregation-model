@@ -10,6 +10,7 @@ globals [
   psychDist-summary
 ;  use-local-search ;; true for Schelling's logic, false for global teleportation
 ;  use-dualLevel-calc-A_N
+;  use-extreme-incompatibility-rule
 ]
 
 turtles-own [
@@ -30,6 +31,7 @@ turtles-own [
   my-%-compatible-neighbors-wanted
   happy?
   cluster-id
+  sub-cluster-id  ;; secondary ID for density-based sub-clustering
 ]
 
 to setup
@@ -214,32 +216,40 @@ to update-turtles
 ;      stop
 ;    ]
     if total-nearby = 0 [
-      ;; Extraverts are unhappy with no neighbors, others are happy
-      ifelse extraversion > 50 [
-        set happy? false
-      ] [
-        set happy? true
-      ]
-      set incompatible-nearby 0
-      set compatible-nearby 0
-      stop
-    ]
-    ;; Use LOCAL variable to count incompatible neighbors
-    let incomp-count 0
-    ask my-neighbors [
-      let dist calculate-psychDist-between myself self
-      if dist > [my-pairwise-incompatibility-threshold] of myself [
-        set incomp-count incomp-count + 1  ;; increment LOCAL variable
-      ]
-    ]
+  ;; Extraverts are unhappy with no neighbors, others are happy
+  ifelse extraversion > 50 [
+    set happy? false
+  ] [
+    set happy? true
+  ]
+  set incompatible-nearby 0
+  set compatible-nearby 0
+  stop
+]
 
-    ;; Now set the turtle's own variable
-    set incompatible-nearby incomp-count
-    set compatible-nearby total-nearby - incompatible-nearby
+let incomp-count 0
+let has-extreme-incompatibility false
 
-    ;; Calculate happiness
-    let compatible-ratio (compatible-nearby / total-nearby)
-    set happy? (compatible-ratio >= (my-%-compatible-neighbors-wanted / 100))
+ask my-neighbors [
+  let dist calculate-psychDist-between myself self
+  if dist > [my-pairwise-incompatibility-threshold] of myself [
+    set incomp-count incomp-count + 1
+  ]
+  ;; Check if any neighbor has distance > 1.5 times threshold (only if rule enabled)
+  if use-extreme-incompatibility-rule and dist > (1.5 * [my-pairwise-incompatibility-threshold] of myself) [
+    set has-extreme-incompatibility true
+  ]
+]
+
+set incompatible-nearby incomp-count
+set compatible-nearby total-nearby - incompatible-nearby
+
+let compatible-ratio (compatible-nearby / total-nearby)
+ifelse use-extreme-incompatibility-rule [
+  set happy? (compatible-ratio >= (my-%-compatible-neighbors-wanted / 100) and not has-extreme-incompatibility)
+] [
+  set happy? (compatible-ratio >= (my-%-compatible-neighbors-wanted / 100))
+]
   ]
 end
 
@@ -550,6 +560,290 @@ to highlight-cluster [target-cluster-id]
   ]
 
   print (word "Cluster " target-cluster-id " highlighted in red. (" (count turtles with [cluster-id = target-cluster-id]) " agents)")
+end
+
+;; ========================================
+;; DENSITY-BASED SUB-CLUSTERING PROCEDURES
+;; ========================================
+
+to-report count-shared-neighbors [agent1 agent2 parent-cluster-id]
+  ;; Count how many neighbors agent1 and agent2 have in common within the same parent cluster
+  let neighbors1 turtles-on [neighbors] of agent1 with [cluster-id = parent-cluster-id and sub-cluster-id != -1]
+  let neighbors2 turtles-on [neighbors] of agent2 with [cluster-id = parent-cluster-id and sub-cluster-id != -1]
+
+  let shared-count 0
+  ask neighbors1 [
+    if member? self neighbors2 [
+      set shared-count shared-count + 1
+    ]
+  ]
+  report shared-count
+end
+
+to density-flood-fill-sub-cluster [sub-id starting-turtle parent-cluster-id]
+  ;; Mark the starting turtle and recursively assign neighbors if they meet density criteria
+  ask starting-turtle [
+    if sub-cluster-id = -1 and cluster-id = parent-cluster-id [
+      set sub-cluster-id sub-id
+
+      ;; Get all unassigned neighbors in same cluster
+      let potential-neighbors turtles-on neighbors with [cluster-id = parent-cluster-id and sub-cluster-id = -1]
+
+      ask potential-neighbors [
+        ;; Check if this neighbor has at least min-shared-neighbors common neighbors in the sub-cluster
+        let shared-neighbor-count 0
+        let nearby-neighbors turtles-on neighbors with [cluster-id = parent-cluster-id and sub-cluster-id = sub-id]
+
+        set shared-neighbor-count count nearby-neighbors
+
+        if shared-neighbor-count >= min-shared-neighbors [
+          density-flood-fill-sub-cluster sub-id self parent-cluster-id
+        ]
+      ]
+    ]
+  ]
+end
+
+to identify-sub-clusters
+  ;; Set default parameters from sliders if they exist (for robustness)
+  if min-shared-neighbors = 0 [ set min-shared-neighbors 2 ]
+  if min-sub-cluster-size = 0 [ set min-sub-cluster-size 3 ]
+
+  ;; Reset all sub-cluster IDs
+  ask turtles [
+    set sub-cluster-id -1
+  ]
+
+  ;; For each original cluster, apply density-based subdivision
+  let cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+
+  foreach sort cluster-ids [cluster-id-val ->
+    identify-sub-clusters-in-cluster cluster-id-val
+  ]
+
+  let total-sub-clusters length remove-duplicates [sub-cluster-id] of turtles with [sub-cluster-id != -1]
+  let isolated-count count turtles with [sub-cluster-id = -1]
+
+  print (word "Sub-clustering complete: " total-sub-clusters " sub-clusters identified, " isolated-count " isolated/chain agents")
+end
+
+to identify-sub-clusters-in-cluster [cluster-id-val]
+  ;; Helper procedure for subdividing a single cluster
+  let cluster-members turtles with [cluster-id = cluster-id-val]
+
+  ;; Reset just this cluster's sub-cluster IDs
+  ask cluster-members [
+    set sub-cluster-id -1
+  ]
+
+  ;; Process each unassigned agent in this cluster
+  let unassigned-members cluster-members with [sub-cluster-id = -1]
+  let current-sub-id 0
+
+  repeat count unassigned-members [
+    ;; Get one unassigned member to start a new sub-cluster
+    let seed-agent one-of turtles with [cluster-id = cluster-id-val and sub-cluster-id = -1]
+
+    if seed-agent != nobody [
+      ;; Start density-based flood fill
+      ask seed-agent [
+        density-flood-fill-sub-cluster current-sub-id self cluster-id-val
+      ]
+
+      ;; Check if this sub-cluster meets minimum size
+      let sub-cluster-size count turtles with [sub-cluster-id = current-sub-id]
+
+      if sub-cluster-size >= min-sub-cluster-size [
+        set current-sub-id current-sub-id + 1
+      ] [
+        ;; If sub-cluster is too small, revert to unclustered (-1)
+        ask turtles with [sub-cluster-id = current-sub-id] [
+          set sub-cluster-id -1
+        ]
+      ]
+    ]
+  ]
+end
+
+to color-sub-clusters
+  ;; Color each sub-cluster with a distinct color, isolated agents in gray
+  let sub-cluster-ids remove-duplicates [sub-cluster-id] of turtles with [sub-cluster-id != -1]
+  let cluster-colors [red orange yellow green blue magenta cyan white brown pink]
+
+  ask turtles with [sub-cluster-id = -1] [
+    set color gray
+  ]
+
+  foreach sort sub-cluster-ids [sub-id ->
+    ask turtles with [sub-cluster-id = sub-id] [
+      set color item (sub-id mod length cluster-colors) cluster-colors
+    ]
+  ]
+end
+
+to color-sub-clusters-hierarchical
+  ;; Color sub-clusters with shade variations of their parent cluster color
+  let base-cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+
+  ;; Mark isolated agents in gray
+  ask turtles with [sub-cluster-id = -1] [
+    set color gray
+  ]
+
+  ;; For each original cluster, assign shade variations to its sub-clusters
+  foreach sort base-cluster-ids [base-cluster-val ->
+    let cluster-members turtles with [cluster-id = base-cluster-val and sub-cluster-id != -1]
+    let sub-ids-in-cluster remove-duplicates [sub-cluster-id] of cluster-members
+    let base-color one-of [color] of cluster-members
+
+    ;; Assign colors based on sub-cluster ID with shading
+    let color-offset 0
+    foreach sort sub-ids-in-cluster [sub-id ->
+      ;; Create shade variation: base-color ± (1,2,3,4...)
+      let adjusted-color base-color
+      if color-offset > 0 [
+        let variation-magnitude ((color-offset + 1) / 2)  ;; 0.5, 1, 1.5, 2...
+        let variation-direction (ifelse-value (color-offset mod 2 = 0) [1] [-1])
+        set adjusted-color base-color + (variation-direction * variation-magnitude)
+      ]
+
+      ask turtles with [sub-cluster-id = sub-id and cluster-id = base-cluster-val] [
+        set color adjusted-color
+      ]
+
+      set color-offset color-offset + 1
+    ]
+  ]
+end
+
+to analyze-sub-clusters
+  print "=========================================="
+  print "SUB-CLUSTER ANALYSIS (Density-Based)"
+  print "=========================================="
+  print ""
+
+  let total-sub-clusters length remove-duplicates [sub-cluster-id] of turtles with [sub-cluster-id != -1]
+  let isolated-count count turtles with [sub-cluster-id = -1]
+  let total-agents count turtles
+
+  print (word "Total Sub-Clusters: " total-sub-clusters)
+  print (word "Isolated/Chain Agents: " isolated-count " (" precision (isolated-count / total-agents * 100) 1 "%)")
+  print ""
+
+  ;; Analyze each original cluster and its sub-clusters
+  let base-cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+
+  foreach sort base-cluster-ids [base-id ->
+    let base-members turtles with [cluster-id = base-id]
+    let base-size count base-members
+    let sub-ids-in-base remove-duplicates [sub-cluster-id] of base-members with [sub-cluster-id != -1]
+    let sub-count length sub-ids-in-base
+    let isolated-in-base count base-members with [sub-cluster-id = -1]
+
+    print (word "ORIGINAL CLUSTER " base-id " (" base-size " agents)")
+    print (word "  Sub-Clusters: " sub-count ", Isolated: " isolated-in-base)
+
+    ;; Analyze each sub-cluster in this base cluster
+    foreach sort sub-ids-in-base [sub-id ->
+      analyze-single-sub-cluster sub-id base-id
+    ]
+
+    print ""
+  ]
+
+  ;; Compare within vs between sub-cluster psychDist
+  compare-sub-cluster-psychDist
+
+  print "=========================================="
+end
+
+to analyze-single-sub-cluster [sub-id base-cluster-id]
+  let sub-members turtles with [sub-cluster-id = sub-id]
+  let sub-size count sub-members
+
+  if sub-size < 4 [ stop ]  ;; Only analyze sub-clusters with 4+ agents
+
+  print (word "  Sub-Cluster " sub-id " (" sub-size " agents):")
+
+  ;; Mean trait scores
+  let mean-o mean [openness] of sub-members
+  let mean-c mean [conscientiousness] of sub-members
+  let mean-e mean [extraversion] of sub-members
+  let mean-a mean [agreeableness] of sub-members
+  let mean-n mean [neuroticism] of sub-members
+
+  print (word "    Mean Traits: O=" precision mean-o 1 " C=" precision mean-c 1 " E=" precision mean-e 1 " A=" precision mean-a 1 " N=" precision mean-n 1)
+
+  ;; Within sub-cluster psychDist
+  let within-distances []
+  ask sub-members [
+    let my-neighbors (turtles-on neighbors) with [sub-cluster-id = sub-id]
+    ask my-neighbors [
+      let dist calculate-psychDist-between myself self
+      set within-distances lput dist within-distances
+    ]
+  ]
+
+  if length within-distances > 0 [
+    let mean-within mean within-distances
+    print (word "    Within psychDist: " precision mean-within 2)
+  ]
+
+  print ""
+end
+
+to compare-sub-cluster-psychDist
+  print "PSYCHDIST COMPARISON: Within vs Between Sub-Clusters"
+  print "=========================================="
+
+  ;; Within sub-cluster distances
+  let within-sub-distances []
+  ask turtles with [sub-cluster-id != -1] [
+    let my-sub-id sub-cluster-id
+    let same-sub-neighbors (turtles-on neighbors) with [sub-cluster-id = my-sub-id]
+    ask same-sub-neighbors [
+      let dist calculate-psychDist-between myself self
+      set within-sub-distances lput dist within-sub-distances
+    ]
+  ]
+
+  ;; Between sub-cluster distances (same parent cluster)
+  let between-same-parent-distances []
+  ask turtles with [sub-cluster-id != -1] [
+    let my-cluster cluster-id
+    let my-sub-id sub-cluster-id
+    let diff-sub-neighbors (turtles-on neighbors) with [cluster-id = my-cluster and sub-cluster-id != my-sub-id and sub-cluster-id != -1]
+    ask diff-sub-neighbors [
+      let dist calculate-psychDist-between myself self
+      set between-same-parent-distances lput dist between-same-parent-distances
+    ]
+  ]
+
+  ;; Between different parent clusters
+  let between-diff-parent-distances []
+  ask turtles with [cluster-id != -1] [
+    let my-cluster cluster-id
+    let diff-cluster-neighbors (turtles-on neighbors) with [cluster-id != my-cluster and cluster-id != -1]
+    ask diff-cluster-neighbors [
+      let dist calculate-psychDist-between myself self
+      set between-diff-parent-distances lput dist between-diff-parent-distances
+    ]
+  ]
+
+  print ""
+  if length within-sub-distances > 0 [
+    print (word "Within Sub-Cluster psychDist: " precision (mean within-sub-distances) 2 " (n=" (length within-sub-distances) ")")
+  ]
+
+  if length between-same-parent-distances > 0 [
+    print (word "Between Sub-Clusters (same parent): " precision (mean between-same-parent-distances) 2 " (n=" (length between-same-parent-distances) ")")
+  ]
+
+  if length between-diff-parent-distances > 0 [
+    print (word "Between Different Parent Clusters: " precision (mean between-diff-parent-distances) 2 " (n=" (length between-diff-parent-distances) ")")
+  ]
+
+  print ""
 end
 
 to analyze-clusters
@@ -1031,7 +1325,7 @@ SLIDER
 %-compatible-neighbors-wanted
 0.0
 100.0
-75.0
+35.0
 5
 1
 %
@@ -1159,7 +1453,7 @@ INPUTBOX
 782
 530
 cluster-ID-Input
-2.0
+7.0
 1
 0
 Number
@@ -1205,6 +1499,115 @@ BUTTON
 623
 NIL
 color-clusters
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SWITCH
+85
+670
+322
+703
+use-extreme-incompatibility-rule
+use-extreme-incompatibility-rule
+0
+1
+-1000
+
+SLIDER
+72
+720
+314
+753
+min-shared-neighbors
+min-shared-neighbors
+1
+4
+2.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+72
+760
+314
+793
+min-sub-cluster-size
+min-sub-cluster-size
+2
+10
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+BUTTON
+400
+675
+585
+708
+Identify Sub-Clusters
+identify-sub-clusters
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+635
+640
+807
+673
+Color Sub-Clusters (New Colors)
+color-sub-clusters
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+635
+680
+807
+713
+Color Sub-Clusters (Hierarchical)
+color-sub-clusters-hierarchical
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+400
+715
+585
+748
+Analyze Sub-Clusters
+analyze-sub-clusters
 NIL
 1
 T
