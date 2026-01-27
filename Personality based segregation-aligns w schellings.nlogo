@@ -581,23 +581,42 @@ to-report count-shared-neighbors [agent1 agent2 parent-cluster-id]
 end
 
 to density-flood-fill-sub-cluster [sub-id starting-turtle parent-cluster-id]
-  ;; Mark the starting turtle and recursively assign neighbors if they meet density criteria
+  ;; Queue-based flood fill with density constraint
+  ;; Initial recruitment is more permissive, then density threshold is enforced
+  let frontier (list starting-turtle)
+  let processed (list)
+
   ask starting-turtle [
     if sub-cluster-id = -1 and cluster-id = parent-cluster-id [
       set sub-cluster-id sub-id
+    ]
+  ]
 
-      ;; Get all unassigned neighbors in same cluster
-      let potential-neighbors turtles-on neighbors with [cluster-id = parent-cluster-id and sub-cluster-id = -1]
+  while [length frontier > 0] [
+    let current-agent first frontier
+    set frontier but-first frontier
+    set processed lput current-agent processed
 
-      ask potential-neighbors [
-        ;; Check if this neighbor has at least min-shared-neighbors common neighbors in the sub-cluster
-        let shared-neighbor-count 0
-        let nearby-neighbors turtles-on neighbors with [cluster-id = parent-cluster-id and sub-cluster-id = sub-id]
+    ask current-agent [
+      let unassigned-neighbors (turtles-on neighbors) with [cluster-id = parent-cluster-id and sub-cluster-id = -1]
 
-        set shared-neighbor-count count nearby-neighbors
+      ask unassigned-neighbors [
+        ;; Check: how many neighbors does this agent have that are already in the sub-cluster?
+        let in-sub-cluster-count count (turtles-on neighbors) with [cluster-id = parent-cluster-id and sub-cluster-id = sub-id]
 
-        if shared-neighbor-count >= min-shared-neighbors [
-          density-flood-fill-sub-cluster sub-id self parent-cluster-id
+        ;; For initial growth (when sub-cluster is small), be more permissive
+        ;; Once sub-cluster has 4+ agents, require min-shared-neighbors
+        let current-sub-size count turtles with [sub-cluster-id = sub-id]
+        let threshold ifelse-value (current-sub-size < 4) [1] [min-shared-neighbors]
+
+        if in-sub-cluster-count >= threshold [
+          ;; Recruit this agent
+          set sub-cluster-id sub-id
+
+          ;; Add to frontier if not already processed
+          if not member? self processed [
+            set frontier lput self frontier
+          ]
         ]
       ]
     ]
@@ -653,7 +672,7 @@ to identify-sub-clusters-in-cluster [cluster-id-val]
       ;; Check if this sub-cluster meets minimum size
       let sub-cluster-size count turtles with [sub-cluster-id = current-sub-id]
 
-      if sub-cluster-size >= min-sub-cluster-size [
+      ifelse sub-cluster-size >= min-sub-cluster-size [
         set current-sub-id current-sub-id + 1
       ] [
         ;; If sub-cluster is too small, revert to unclustered (-1)
