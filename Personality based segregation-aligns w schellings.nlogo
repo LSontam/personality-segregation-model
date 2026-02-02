@@ -581,8 +581,8 @@ to-report count-shared-neighbors [agent1 agent2 parent-cluster-id]
 end
 
 to density-flood-fill-sub-cluster [sub-id starting-turtle parent-cluster-id]
-  ;; Queue-based flood fill with density constraint
-  ;; Initial recruitment is more permissive, then density threshold is enforced
+  ;; Queue-based flood fill with adaptive density constraint
+  ;; Initial recruitment is permissive (threshold=1), then strict (threshold=min-shared-neighbors) once established
   let frontier (list starting-turtle)
   let processed (list)
 
@@ -601,16 +601,15 @@ to density-flood-fill-sub-cluster [sub-id starting-turtle parent-cluster-id]
       let unassigned-neighbors (turtles-on neighbors) with [cluster-id = parent-cluster-id and sub-cluster-id = -1]
 
       ask unassigned-neighbors [
-        ;; Check: how many neighbors does this agent have that are already in the sub-cluster?
+        ;; Count how many neighbors of this agent are already in the sub-cluster
         let in-sub-cluster-count count (turtles-on neighbors) with [cluster-id = parent-cluster-id and sub-cluster-id = sub-id]
 
-        ;; For initial growth (when sub-cluster is small), be more permissive
-        ;; Once sub-cluster has 4+ agents, require min-shared-neighbors
-        let current-sub-size count turtles with [sub-cluster-id = sub-id]
+        ;; Adaptive threshold: permissive when bootstrapping, strict when established
+        let current-sub-size count turtles with [sub-cluster-id = sub-id and cluster-id = parent-cluster-id]
         let threshold ifelse-value (current-sub-size < 4) [1] [min-shared-neighbors]
 
         if in-sub-cluster-count >= threshold [
-          ;; Recruit this agent
+          ;; Recruit this agent to the sub-cluster
           set sub-cluster-id sub-id
 
           ;; Add to frontier if not already processed
@@ -641,7 +640,7 @@ to identify-sub-clusters
   ]
 
   let total-sub-clusters length remove-duplicates [sub-cluster-id] of turtles with [sub-cluster-id != -1]
-  let isolated-count count turtles with [sub-cluster-id = -1]
+  let isolated-count count turtles with [sub-cluster-id = -1 and cluster-id != -1]
 
   print (word "Sub-clustering complete: " total-sub-clusters " sub-clusters identified, " isolated-count " isolated/chain agents")
 end
@@ -657,7 +656,9 @@ to identify-sub-clusters-in-cluster [cluster-id-val]
 
   ;; Process each unassigned agent in this cluster
   let unassigned-members cluster-members with [sub-cluster-id = -1]
-  let current-sub-id 0
+  let current-sub-id (cluster-id-val * 1000)
+
+  print (word "Processing cluster " cluster-id-val " with " count cluster-members " members")
 
   repeat count unassigned-members [
     ;; Get one unassigned member to start a new sub-cluster
@@ -670,13 +671,15 @@ to identify-sub-clusters-in-cluster [cluster-id-val]
       ]
 
       ;; Check if this sub-cluster meets minimum size
-      let sub-cluster-size count turtles with [sub-cluster-id = current-sub-id]
+      let sub-cluster-size count turtles with [sub-cluster-id = current-sub-id and cluster-id = cluster-id-val]
+
+      print (word "  Sub-cluster " cluster-id-val "." (current-sub-id mod 1000) ": " sub-cluster-size " agents (min required: " min-sub-cluster-size ")")
 
       ifelse sub-cluster-size >= min-sub-cluster-size [
         set current-sub-id current-sub-id + 1
       ] [
         ;; If sub-cluster is too small, revert to unclustered (-1)
-        ask turtles with [sub-cluster-id = current-sub-id] [
+        ask turtles with [sub-cluster-id = current-sub-id and cluster-id = cluster-id-val] [
           set sub-cluster-id -1
         ]
       ]
@@ -782,7 +785,8 @@ to analyze-single-sub-cluster [sub-id base-cluster-id]
 
   if sub-size < 4 [ stop ]  ;; Only analyze sub-clusters with 4+ agents
 
-  print (word "  Sub-Cluster " sub-id " (" sub-size " agents):")
+  let display-id (word base-cluster-id "." (sub-id mod 1000))
+  print (word "  Sub-Cluster " display-id " (" sub-size " agents):")
 
   ;; Mean trait scores
   let mean-o mean [openness] of sub-members
