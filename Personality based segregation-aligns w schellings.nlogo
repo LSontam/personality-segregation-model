@@ -715,25 +715,29 @@ to color-sub-clusters-hierarchical
   ;; For each original cluster, assign shade variations to its sub-clusters
   foreach sort base-cluster-ids [base-cluster-val ->
     let cluster-members turtles with [cluster-id = base-cluster-val and sub-cluster-id != -1]
-    let sub-ids-in-cluster remove-duplicates [sub-cluster-id] of cluster-members
-    let base-color one-of [color] of cluster-members
 
-    ;; Assign colors based on sub-cluster ID with shading
-    let color-offset 0
-    foreach sort sub-ids-in-cluster [sub-id ->
-      ;; Create shade variation: base-color ± (1,2,3,4...)
-      let adjusted-color base-color
-      if color-offset > 0 [
-        let variation-magnitude ((color-offset + 1) / 2)  ;; 0.5, 1, 1.5, 2...
-        let variation-direction (ifelse-value (color-offset mod 2 = 0) [1] [-1])
-        set adjusted-color base-color + (variation-direction * variation-magnitude)
+    ;; Skip clusters with no sub-clustered members (all isolated)
+    if count cluster-members > 0 [
+      let sub-ids-in-cluster remove-duplicates [sub-cluster-id] of cluster-members
+      let base-color one-of [color] of cluster-members
+
+      ;; Assign colors based on sub-cluster ID with shading
+      let color-offset 0
+      foreach sort sub-ids-in-cluster [sub-id ->
+        ;; Create shade variation: base-color ± (1,2,3,4...)
+        let adjusted-color base-color
+        if color-offset > 0 [
+          let variation-magnitude ((color-offset + 1) / 2)  ;; 0.5, 1, 1.5, 2...
+          let variation-direction (ifelse-value (color-offset mod 2 = 0) [1] [-1])
+          set adjusted-color base-color + (variation-direction * variation-magnitude)
+        ]
+
+        ask turtles with [sub-cluster-id = sub-id and cluster-id = base-cluster-val] [
+          set color adjusted-color
+        ]
+
+        set color-offset color-offset + 1
       ]
-
-      ask turtles with [sub-cluster-id = sub-id and cluster-id = base-cluster-val] [
-        set color adjusted-color
-      ]
-
-      set color-offset color-offset + 1
     ]
   ]
 end
