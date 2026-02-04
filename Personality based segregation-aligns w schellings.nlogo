@@ -744,12 +744,12 @@ end
 
 to analyze-sub-clusters
   print "=========================================="
-  print "SUB-CLUSTER ANALYSIS (Density-Based)"
+  print "SUB-CLUSTER ANALYSIS (Density-Based, 4+ agents minimum)"
   print "=========================================="
   print ""
 
   let total-sub-clusters length remove-duplicates [sub-cluster-id] of turtles with [sub-cluster-id != -1]
-  let isolated-count count turtles with [sub-cluster-id = -1]
+  let isolated-count count turtles with [sub-cluster-id = -1 and cluster-id != -1]
   let total-agents count turtles
 
   print (word "Total Sub-Clusters: " total-sub-clusters)
@@ -758,8 +758,17 @@ to analyze-sub-clusters
 
   ;; Analyze each original cluster and its sub-clusters
   let base-cluster-ids remove-duplicates [cluster-id] of turtles with [cluster-id != -1]
+  let valid-base-clusters []
 
-  foreach sort base-cluster-ids [base-id ->
+  ;; Filter for clusters with 4+ agents
+  foreach sort base-cluster-ids [id ->
+    let base-size count turtles with [cluster-id = id]
+    if base-size >= 4 [
+      set valid-base-clusters lput id valid-base-clusters
+    ]
+  ]
+
+  foreach valid-base-clusters [base-id ->
     let base-members turtles with [cluster-id = base-id]
     let base-size count base-members
     let sub-ids-in-base remove-duplicates [sub-cluster-id] of base-members with [sub-cluster-id != -1]
